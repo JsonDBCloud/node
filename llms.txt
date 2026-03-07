@@ -1,0 +1,90 @@
+# @jsondb-cloud/client
+
+> Official JavaScript/TypeScript SDK for jsondb.cloud — a hosted JSON document database.
+
+## Install
+
+```bash
+npm install @jsondb-cloud/client
+```
+
+## Quick Start
+
+```typescript
+import { JsonDB } from "@jsondb-cloud/client";
+
+const db = new JsonDB({ apiKey: "jdb_sk_live_xxxx" });
+const users = db.collection<{ name: string; email: string }>("users");
+
+// Create
+const alice = await users.create({ name: "Alice", email: "alice@example.com" });
+
+// Read
+const user = await users.get(alice._id);
+
+// List with filters
+const active = await users.list({ filter: { role: "admin" }, sort: "-$createdAt", limit: 10 });
+
+// Update (partial)
+await users.patch(alice._id, { email: "new@example.com" });
+
+// Delete
+await users.delete(alice._id);
+```
+
+## Configuration
+
+```typescript
+const db = new JsonDB({
+  apiKey: "jdb_sk_live_xxxx", // Required
+  project: "v1",              // Default: "v1"
+  baseUrl: "https://api.jsondb.cloud",
+  timeout: 30000,
+  retry: { enabled: true, maxRetries: 3 },
+  headers: {},
+});
+```
+
+## API Overview
+
+**CRUD:** `create`, `get`, `list`, `count`, `update`, `patch`, `jsonPatch`, `delete`
+**Bulk:** `bulk`, `bulkCreate`
+**Query Builder:** `where(field, op, value).orderBy().limit().offset().select().exec()`
+**Schema:** `setSchema`, `getSchema`, `removeSchema`, `validate`
+**Versions:** `listVersions`, `getVersion`, `restoreVersion`, `diffVersions`
+**Webhooks:** `createWebhook`, `listWebhooks`, `getWebhook`, `updateWebhook`, `deleteWebhook`, `testWebhook`
+**Import/Export:** `importDocuments`, `exportDocuments`
+**Streaming:** `stream` (SSE real-time changes)
+
+## Error Handling
+
+All errors extend `JsonDBError` with `.code`, `.status`, `.details`.
+
+```typescript
+import { NotFoundError, ValidationError } from "@jsondb-cloud/client";
+
+try {
+  await users.get("missing");
+} catch (err) {
+  if (err instanceof NotFoundError) { /* 404 */ }
+  if (err instanceof ValidationError) { /* 400 - err.errors has details */ }
+}
+```
+
+Error classes: `NotFoundError` (404), `ValidationError` (400), `ConflictError` (409), `UnauthorizedError` (401), `ForbiddenError` (403), `RateLimitError` (429), `QuotaExceededError` (429), `DocumentTooLargeError` (413), `ServerError` (500).
+
+## Full API Reference
+
+See llms-full.txt for complete method signatures, parameters, types, and examples.
+
+## Links
+
+- Docs: https://jsondb.cloud/docs/sdks/node
+- npm: https://www.npmjs.com/package/@jsondb-cloud/client
+- GitHub: https://github.com/JsonDBCloud/node
+
+## Related Packages
+
+- `@jsondb-cloud/mcp` — MCP server for AI agents — https://www.npmjs.com/package/@jsondb-cloud/mcp
+- `@jsondb-cloud/cli` — CLI tool — https://www.npmjs.com/package/@jsondb-cloud/cli
+- `jsondb-cloud` (PyPI) — Python SDK — https://pypi.org/project/jsondb-cloud/

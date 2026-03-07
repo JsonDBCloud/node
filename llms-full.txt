@@ -1,0 +1,731 @@
+# @jsondb-cloud/client — Full API Reference
+
+> Official JavaScript/TypeScript SDK for jsondb.cloud — a hosted JSON document database.
+
+## Install
+
+```bash
+npm install @jsondb-cloud/client
+```
+
+## Exports
+
+```typescript
+// Classes
+import { JsonDB, Collection, QueryBuilder, ChangeStream } from "@jsondb-cloud/client";
+
+// Error classes
+import {
+  JsonDBError, NotFoundError, ConflictError, ValidationError,
+  UnauthorizedError, ForbiddenError, QuotaExceededError,
+  RateLimitError, DocumentTooLargeError, ServerError,
+} from "@jsondb-cloud/client";
+
+// Types
+import type {
+  Document, DocumentMeta, ListResponse, ListOptions, FilterOperators, FilterValue,
+  BulkOperation, BulkResult, JsonDBConfig, StreamOptions, StreamEventType,
+  StreamEventData, VersionEntry, VersionDiff, Webhook, WebhookCreateOptions,
+  WebhookUpdateOptions, WebhookDelivery, WebhookWithDeliveries,
+  ImportOptions, ImportResult, ExportOptions,
+} from "@jsondb-cloud/client";
+```
+
+---
+
+## JsonDB Client
+
+### Constructor
+
+```typescript
+const db = new JsonDB(config: JsonDBConfig);
+```
+
+#### JsonDBConfig
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `apiKey` | `string` | — | **Required.** API key (`jdb_sk_live_...` or `jdb_sk_test_...`) |
+| `project` | `string` | `"v1"` | Project identifier |
+| `baseUrl` | `string` | `"https://api.jsondb.cloud"` | API base URL |
+| `timeout` | `number` | `30000` | Request timeout in milliseconds |
+| `retry.enabled` | `boolean` | `true` | Enable automatic retry with exponential backoff |
+| `retry.maxRetries` | `number` | `3` | Maximum retry attempts |
+| `retry.baseDelay` | `number` | `1000` | Base delay in ms (doubles each retry) |
+| `retry.maxDelay` | `number` | `10000` | Maximum delay cap in ms |
+| `headers` | `Record<string, string>` | `{}` | Extra headers for every request |
+| `fetch` | `typeof fetch` | `globalThis.fetch` | Custom fetch implementation |
+
+### db.collection(name)
+
+```typescript
+const users = db.collection<{ name: string; email: string }>("users");
+```
+
+Returns a typed `Collection<T>` instance. The generic parameter `T` defines the shape of your documents (excluding metadata fields).
+
+### db.listCollections()
+
+```typescript
+const collections: string[] = await db.listCollections();
+// ["users", "posts", "comments"]
+```
+
+---
+
+## Collection
+
+All methods below are on `Collection<T>`.
+
+### Document Type
+
+Every stored document has these metadata fields added automatically:
+
+```typescript
+interface DocumentMeta {
+  _id: string;        // Unique document ID
+  $createdAt: string; // ISO 8601 timestamp
+  $updatedAt: string; // ISO 8601 timestamp
+  $version: number;   // Version number
+}
+
+type Document<T> = T & DocumentMeta;
+```
+
+---
+
+### CRUD Operations
+
+#### create(doc, options?)
+
+Create a new document. Returns the created document with metadata.
+
+```typescript
+// Auto-generated ID
+const alice = await users.create({ name: "Alice", email: "alice@example.com" });
+// alice._id = "auto-generated-id"
+
+// Explicit ID
+const bob = await users.create({ name: "Bob", email: "bob@example.com" }, { id: "bob-1" });
+// bob._id = "bob-1"
+```
+
+**Parameters:**
+- `doc: T` — The document body
+- `options?: { id?: string }` — Optional explicit document ID
+
+**Returns:** `Promise<Document<T>>`
+
+#### get(id)
+
+Get a single document by ID.
+
+```typescript
+const user = await users.get("alice-1");
+// { _id: "alice-1", name: "Alice", email: "...", $createdAt: "...", $updatedAt: "...", $version: 1 }
+```
+
+**Parameters:** `id: string`
+**Returns:** `Promise<Document<T>>`
+**Throws:** `NotFoundError` if document doesn't exist
+
+#### list(options?)
+
+List documents with optional filtering, sorting, and pagination.
+
+```typescript
+const result = await users.list({
+  filter: { role: "admin" },
+  sort: "-$createdAt",
+  limit: 10,
+  offset: 0,
+  select: ["name", "email"],
+});
+// result.data = [{ _id, name, email, ... }, ...]
+// result.meta = { total: 42, limit: 10, offset: 0, hasMore: true }
+```
+
+**Parameters:** `ListOptions<T>`
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `filter` | `Record<string, FilterValue>` | Field filters (see Filtering below) |
+| `sort` | `string` | Sort field. Prefix with `-` for descending (e.g. `"-$createdAt"`) |
+| `limit` | `number` | Max documents to return |
+| `offset` | `number` | Skip this many documents |
+| `select` | `string[]` | Only return these fields |
+
+**Returns:** `Promise<ListResponse<T>>`
+
+```typescript
+interface ListResponse<T> {
+  data: Document<T>[];
+  meta: { total: number; limit: number; offset: number; hasMore: boolean };
+}
+```
+
+#### Filtering
+
+Filters support direct equality or operator objects:
+
+```typescript
+// Equality
+{ filter: { status: "active" } }
+
+// Operators
+{ filter: { age: { $gt: 18, $lt: 65 } } }
+```
+
+**Available operators:**
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `$eq` | Equal | `{ status: { $eq: "active" } }` |
+| `$neq` | Not equal | `{ status: { $neq: "deleted" } }` |
+| `$gt` | Greater than | `{ age: { $gt: 18 } }` |
+| `$gte` | Greater than or equal | `{ age: { $gte: 18 } }` |
+| `$lt` | Less than | `{ age: { $lt: 65 } }` |
+| `$lte` | Less than or equal | `{ age: { $lte: 65 } }` |
+| `$contains` | String contains | `{ name: { $contains: "ali" } }` |
+| `$in` | Value in array | `{ role: { $in: ["admin", "mod"] } }` |
+| `$exists` | Field exists | `{ avatar: { $exists: true } }` |
+
+#### count(filter?)
+
+Count documents matching an optional filter.
+
+```typescript
+const total = await users.count();
+const admins = await users.count({ role: "admin" });
+```
+
+**Parameters:** `filter?: ListOptions<T>["filter"]`
+**Returns:** `Promise<number>`
+
+#### update(id, doc)
+
+Replace a document entirely (PUT semantics).
+
+```typescript
+await users.update("alice-1", { name: "Alice Smith", email: "alice@newdomain.com" });
+```
+
+**Parameters:** `id: string`, `doc: T`
+**Returns:** `Promise<Document<T>>`
+
+#### patch(id, partial)
+
+Partial update using merge-patch (only provided fields are changed).
+
+```typescript
+await users.patch("alice-1", { email: "alice@newdomain.com" });
+// Only email is updated; name and other fields preserved
+```
+
+**Parameters:** `id: string`, `partial: Partial<T>`
+**Returns:** `Promise<Document<T>>`
+**Content-Type:** `application/merge-patch+json`
+
+#### jsonPatch(id, operations)
+
+Apply JSON Patch operations per RFC 6902.
+
+```typescript
+await users.jsonPatch("alice-1", [
+  { op: "replace", path: "/name", value: "Alice Smith" },
+  { op: "add", path: "/verified", value: true },
+  { op: "remove", path: "/tempField" },
+]);
+```
+
+**Parameters:**
+- `id: string`
+- `operations: { op: string; path: string; value?: unknown; from?: string }[]`
+
+**Returns:** `Promise<Document<T>>`
+**Content-Type:** `application/json-patch+json`
+
+#### delete(id)
+
+Delete a document.
+
+```typescript
+await users.delete("alice-1");
+```
+
+**Parameters:** `id: string`
+**Returns:** `Promise<void>`
+
+---
+
+### Query Builder
+
+Fluent interface for building queries. Start with `where()` on a collection.
+
+```typescript
+const result = await users
+  .where("age", ">=", 18)
+  .where("status", "==", "active")
+  .orderBy("-name")
+  .limit(10)
+  .offset(5)
+  .select("name", "age")
+  .exec();
+```
+
+**Operators:** `==`, `!=`, `>`, `>=`, `<`, `<=`, `contains`, `in`
+
+| Method | Description |
+|--------|-------------|
+| `where(field, op, value)` | Add a filter condition (chainable) |
+| `orderBy(field)` | Sort results. Prefix `-` for descending |
+| `limit(n)` | Limit result count |
+| `offset(n)` | Skip results |
+| `select(...fields)` | Pick specific fields |
+| `exec()` | Returns `Promise<ListResponse<T>>` |
+
+---
+
+### Bulk Operations
+
+#### bulk(operations)
+
+Mixed bulk operations in a single request.
+
+```typescript
+const result = await users.bulk([
+  { method: "POST", body: { name: "Alice" } },
+  { method: "PUT", id: "bob-1", body: { name: "Bob Updated" } },
+  { method: "PATCH", id: "charlie-1", body: { verified: true } },
+  { method: "DELETE", id: "old-user-1" },
+]);
+// result.summary = { total: 4, succeeded: 4, failed: 0 }
+```
+
+**Parameters:** `BulkOperation[]`
+
+```typescript
+interface BulkOperation {
+  method: "POST" | "PUT" | "PATCH" | "DELETE";
+  id?: string;
+  body?: Record<string, unknown>;
+}
+```
+
+**Returns:** `Promise<BulkResult>`
+
+```typescript
+interface BulkResult {
+  results: { status: number; _id: string; ok: boolean; error?: string }[];
+  summary: { total: number; succeeded: number; failed: number };
+}
+```
+
+#### bulkCreate(docs)
+
+Shorthand for bulk-creating multiple documents.
+
+```typescript
+const result = await users.bulkCreate([
+  { name: "Alice" },
+  { name: "Bob" },
+  { name: "Charlie" },
+]);
+```
+
+**Parameters:** `docs: T[]`
+**Returns:** `Promise<BulkResult>`
+
+---
+
+### Schema Validation
+
+#### setSchema(schema)
+
+Set a JSON Schema for this collection. All future writes are validated against it.
+
+```typescript
+await users.setSchema({
+  type: "object",
+  properties: {
+    name: { type: "string", minLength: 1 },
+    email: { type: "string", format: "email" },
+    age: { type: "integer", minimum: 0 },
+  },
+  required: ["name", "email"],
+});
+```
+
+**Parameters:** `schema: Record<string, unknown>` (JSON Schema object)
+**Returns:** `Promise<void>`
+
+#### getSchema()
+
+Get the current schema for this collection.
+
+```typescript
+const schema = await users.getSchema();
+// null if no schema is set
+```
+
+**Returns:** `Promise<Record<string, unknown> | null>`
+
+#### removeSchema()
+
+Remove the schema from this collection.
+
+```typescript
+await users.removeSchema();
+```
+
+**Returns:** `Promise<void>`
+
+#### validate(doc)
+
+Validate a document against the collection schema without storing it.
+
+```typescript
+const result = await users.validate({ name: "", email: "not-an-email" });
+// { valid: false, errors: [{ path: "/name", message: "must NOT have fewer than 1 characters", keyword: "minLength" }] }
+```
+
+**Parameters:** `doc: T`
+**Returns:** `Promise<{ valid: boolean; errors: { path: string; message: string; keyword: string }[] }>`
+
+---
+
+### Version History
+
+#### listVersions(id)
+
+List all versions of a document.
+
+```typescript
+const { versions } = await users.listVersions("alice-1");
+// [{ version: 1, action: "create", timestamp: "2024-01-01T00:00:00Z", size: 128 }, ...]
+```
+
+**Returns:** `Promise<{ versions: VersionEntry[] }>`
+
+```typescript
+interface VersionEntry {
+  version: number;
+  action: string;
+  timestamp: string;
+  size?: number;
+}
+```
+
+#### getVersion(id, version)
+
+Get a document at a specific version.
+
+```typescript
+const oldDoc = await users.getVersion("alice-1", 1);
+```
+
+**Returns:** `Promise<Document<T>>`
+
+#### restoreVersion(id, version)
+
+Restore a document to a specific version. Creates a new version with the old content.
+
+```typescript
+const restored = await users.restoreVersion("alice-1", 1);
+```
+
+**Returns:** `Promise<Document<T>>`
+
+#### diffVersions(id, from, to)
+
+Diff two versions of a document.
+
+```typescript
+const diff = await users.diffVersions("alice-1", 1, 3);
+// { added: { verified: true }, removed: {}, changed: { name: { from: "Alice", to: "Alice Smith" } } }
+```
+
+**Returns:** `Promise<VersionDiff>`
+
+```typescript
+interface VersionDiff {
+  added: Record<string, unknown>;
+  removed: Record<string, unknown>;
+  changed: Record<string, { from: unknown; to: unknown }>;
+}
+```
+
+---
+
+### Webhooks
+
+#### createWebhook(options)
+
+Register a webhook on this collection.
+
+```typescript
+const webhook = await users.createWebhook({
+  url: "https://example.com/webhook",
+  events: ["document.created", "document.updated"],
+  description: "Sync new users",
+  secret: "whsec_xxxx", // Optional HMAC signing secret
+});
+```
+
+**Parameters:** `WebhookCreateOptions`
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `url` | `string` | Yes | Endpoint URL |
+| `events` | `("document.created" \| "document.updated" \| "document.deleted")[]` | Yes | Events to listen for |
+| `description` | `string` | No | Human-readable description |
+| `secret` | `string` | No | HMAC signing secret |
+
+**Returns:** `Promise<Webhook>`
+
+#### listWebhooks()
+
+```typescript
+const { data } = await users.listWebhooks();
+```
+
+**Returns:** `Promise<{ data: Webhook[] }>`
+
+#### getWebhook(webhookId)
+
+Get webhook details including recent deliveries.
+
+```typescript
+const webhook = await users.getWebhook("wh_xxxx");
+// webhook.recentDeliveries = [{ _id, webhookId, timestamp, statusCode, responseTime }, ...]
+```
+
+**Returns:** `Promise<WebhookWithDeliveries>`
+
+#### updateWebhook(webhookId, options)
+
+```typescript
+await users.updateWebhook("wh_xxxx", {
+  url: "https://new-endpoint.com/hook",
+  status: "disabled",
+});
+```
+
+**Parameters:** `WebhookUpdateOptions` — all fields optional: `url`, `events`, `description`, `status`
+**Returns:** `Promise<Webhook>`
+
+#### deleteWebhook(webhookId)
+
+```typescript
+await users.deleteWebhook("wh_xxxx");
+```
+
+**Returns:** `Promise<void>`
+
+#### testWebhook(webhookId)
+
+Send a test event to a webhook.
+
+```typescript
+const delivery = await users.testWebhook("wh_xxxx");
+// { _id: "del_xxxx", webhookId: "wh_xxxx", statusCode: 200, responseTime: 150, timestamp: "..." }
+```
+
+**Returns:** `Promise<WebhookDelivery>`
+
+---
+
+### Import / Export
+
+#### importDocuments(documents, options?)
+
+Import documents into this collection.
+
+```typescript
+const result = await users.importDocuments(
+  [{ name: "Alice" }, { name: "Bob" }],
+  { onConflict: "skip" },
+);
+```
+
+**Parameters:**
+- `documents: Record<string, unknown>[]`
+- `options?: ImportOptions`
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `onConflict` | `"fail" \| "skip" \| "overwrite"` | Behavior on ID conflict |
+| `idField` | `string` | Use this field as the document ID |
+
+**Returns:** `Promise<ImportResult>`
+
+```typescript
+interface ImportResult {
+  results: { status: number; document?: Record<string, unknown>; error?: string }[];
+}
+```
+
+#### exportDocuments(options?)
+
+Export all documents from this collection.
+
+```typescript
+const docs = await users.exportDocuments();
+const admins = await users.exportDocuments({ filter: { role: "admin" } });
+```
+
+**Parameters:** `options?: ExportOptions` — optional `filter` object
+**Returns:** `Promise<Record<string, unknown>[]>`
+
+---
+
+### Real-time Streaming (SSE)
+
+Subscribe to real-time changes via Server-Sent Events.
+
+```typescript
+const stream = users.stream({ events: ["created", "updated"] });
+
+stream.on("created", (doc, raw) => {
+  console.log("New user:", doc.name);
+});
+
+stream.on("updated", (doc, raw) => {
+  console.log("Updated:", doc._id);
+});
+
+stream.on("deleted", (id, raw) => {
+  console.log("Deleted:", id);
+});
+
+stream.on("change", (data, raw) => {
+  console.log("Any change:", data.event);
+});
+
+stream.on("error", (err) => console.error(err));
+stream.on("open", () => console.log("Connected"));
+
+// Stop listening
+stream.close();
+```
+
+**Parameters:** `StreamOptions`
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `events` | `("created" \| "updated" \| "deleted")[]` | Filter which events to receive |
+| `filter` | `Record<string, string \| number \| boolean>` | Filter by document fields |
+
+**Events:**
+
+| Event | Handler Signature | Description |
+|-------|-------------------|-------------|
+| `created` | `(doc: T & { _id: string }, raw: StreamEventData) => void` | Document created |
+| `updated` | `(doc: T & { _id: string }, raw: StreamEventData) => void` | Document updated |
+| `deleted` | `(id: string, raw: StreamEventData) => void` | Document deleted |
+| `change` | `(data: StreamEventData, raw: StreamEventData) => void` | Any change |
+| `error` | `(error: unknown) => void` | Connection error |
+| `open` | `() => void` | Connection opened |
+
+The stream automatically reconnects with exponential backoff (1s to 30s) and resumes from the last event ID.
+
+---
+
+## Error Handling
+
+All API errors extend `JsonDBError`:
+
+```typescript
+class JsonDBError extends Error {
+  code: string;                      // Machine-readable error code
+  status: number;                    // HTTP status code
+  details: Record<string, unknown>;  // Additional error context
+}
+```
+
+### Error Classes
+
+| Class | Status | Code | Extra Fields |
+|-------|--------|------|-------------|
+| `NotFoundError` | 404 | `DOCUMENT_NOT_FOUND` | `documentId?: string` |
+| `ValidationError` | 400 | `VALIDATION_FAILED` | `errors: { path, message, keyword }[]` |
+| `ConflictError` | 409 | `CONFLICT` | — |
+| `UnauthorizedError` | 401 | `UNAUTHORIZED` | — |
+| `ForbiddenError` | 403 | `FORBIDDEN` | — |
+| `RateLimitError` | 429 | `RATE_LIMITED` | — |
+| `QuotaExceededError` | 429 | `QUOTA_EXCEEDED` | — |
+| `DocumentTooLargeError` | 413 | `DOCUMENT_TOO_LARGE` | — |
+| `ServerError` | 500 | `INTERNAL_ERROR` | — |
+
+### Example
+
+```typescript
+import { JsonDB, NotFoundError, ValidationError, RateLimitError } from "@jsondb-cloud/client";
+
+try {
+  await users.create({ name: "" });
+} catch (err) {
+  if (err instanceof ValidationError) {
+    console.log("Validation errors:", err.errors);
+    // [{ path: "/name", message: "must NOT have fewer than 1 characters", keyword: "minLength" }]
+  } else if (err instanceof NotFoundError) {
+    console.log("Not found:", err.documentId);
+  } else if (err instanceof RateLimitError) {
+    console.log("Rate limited, retry later");
+  }
+}
+```
+
+---
+
+## Retry Behavior
+
+The SDK automatically retries on:
+- HTTP 429 (rate limit / quota)
+- HTTP 5xx (server errors)
+- Network errors
+
+Retry uses exponential backoff: `baseDelay * 2^attempt`, capped at `maxDelay`.
+
+Disable retries:
+```typescript
+const db = new JsonDB({ apiKey: "...", retry: { enabled: false } });
+```
+
+---
+
+## TypeScript Generics
+
+Collections are strongly typed via generics:
+
+```typescript
+interface User {
+  name: string;
+  email: string;
+  age: number;
+}
+
+const users = db.collection<User>("users");
+
+// All methods are typed:
+const alice = await users.create({ name: "Alice", email: "a@b.com", age: 30 }); // OK
+await users.create({ invalid: true }); // Type error
+
+// Returned documents include metadata:
+alice._id;        // string
+alice.$createdAt; // string
+alice.$version;   // number
+alice.name;       // string
+```
+
+## Links
+
+- Docs: https://jsondb.cloud/docs/sdks/node
+- npm: https://www.npmjs.com/package/@jsondb-cloud/client
+- GitHub: https://github.com/JsonDBCloud/node
+
+## Related Packages
+
+- `@jsondb-cloud/mcp` — MCP server for AI agents — https://www.npmjs.com/package/@jsondb-cloud/mcp
+- `@jsondb-cloud/cli` — CLI tool — https://www.npmjs.com/package/@jsondb-cloud/cli
+- `jsondb-cloud` (PyPI) — Python SDK — https://pypi.org/project/jsondb-cloud/
